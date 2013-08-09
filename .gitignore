@@ -1,0 +1,7 @@
+ckanext_geogratis.egg-info
+*.pyc
+.project
+.pydevproject
+development.ini
+__init__.py
+*.prefs
