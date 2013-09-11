@@ -14,7 +14,7 @@ setup(
 	author='Ross Thompson',
 	author_email='ross.thompson@statcan.gc.ca',
 	url='http://data.gc.ca',
-	license='Crown Copyright, Government of Canada (MIT License)',
+	license='MIT',
 	packages=find_packages(exclude=['ez_setup', 'examples', 'tests']),
 	namespace_packages=['ckanext', 'ckanext.geogratis'],
 	include_package_data=True,

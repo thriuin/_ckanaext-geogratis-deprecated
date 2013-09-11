@@ -234,7 +234,7 @@ class GeogratisCommand(CkanCommand):
 
                 # get the next set from the Atom feed. When the Atom feed is empty, then we are done.
                 json_obj = self._get_feed_json_obj(self._get_next_link(json_obj))
-                if json_obj['count'] == 0 or i == 1:
+                if json_obj['count'] == 0 or i == 200:
                     break
                 
     """
@@ -251,27 +251,41 @@ class GeogratisCommand(CkanCommand):
     * 
     """
     def _convert_to_od_dataset(self, geoproduct_en, geoproduct_fr):
+        
         odproduct = {}
         valid = True
         
+        # Boilerplate fields for the Open Data record
         odproduct['id'] = geoproduct_en['id']
         odproduct['author_email'] = "open-ouvert@tbs-sct.gc.ca"
         odproduct['language'] = "eng; CAN | fra; CAN"
         odproduct['owner_org'] = "nrcan-rncan"
         odproduct['department_number'] = "115"
         odproduct['title'] = geoproduct_en['title']
+        if len(odproduct['title']) == 0:
+            self.reasons = '%s No English Title Given;' % self.reasons
+            valid = False
         odproduct['title_fra'] = geoproduct_fr['title']
+        if len(odproduct['title_fra']) == 0: 
+            self.reasons = '%s No French Title Given;' % self.reasons
+            valid = False
         odproduct['notes'] = geoproduct_en.get('summary', 'No title provided')
-        odproduct['notes_fra'] = geoproduct_fr.get('summary', 'Pas de titre pr\u00e9vu')
+        odproduct['notes_fra'] = geoproduct_fr.get('summary', u'Pas de titre pr\u00e9vu')
         odproduct['catalog_type'] = u"Geo Data | G\u00e9o"
+        odproduct['license_id'] = u"ca-ogl-lgo"
+        odproduct['attribution'] = u"Contains information licensed under the Open Government Licence \u2013 Canada."
+        odproduct['attribution_fra'] = u"Contient des informations autoris\u00e9es sous la Licence du gouvernement ouvert- Canada"
+        
         # The subject and category fields are derived from the topicCategories field in Geogratis.
         # In the CKAN Canada metadata_schema intergace, there is a mapping that determine which GoC subject
         # to use based on the topicCategories being used.
         topics_subjects = self._get_gc_subject_category(geoproduct_en)
+        
         odproduct['subject'] = topics_subjects['subjects']
         if len(odproduct['subject']) == 0:
             valid = False
             self.reasons = '%s No GC Subjects;' % self.reasons
+        
         odproduct['topic_category'] = topics_subjects['topics']
         if len(odproduct['topic_category']) == 0:
             valid = False
@@ -282,16 +296,16 @@ class GeogratisCommand(CkanCommand):
         if len(odproduct['keywords']) == 0:
             valid = False
             self.reasons = '%s Missing English Keywords;' % self.reasons
+        
         odproduct['keywords_fra'] = self._extract_keywords(geoproduct_fr.get('keywords', []))
         if len(odproduct['keywords_fra']) == 0:
             valid = False        
             self.reasons = '%s Missing English Keywords;' % self.reasons
+                
+        odproduct['geographic_region'] = self._get_places(geoproduct_en)
         
-        odproduct['license_id'] = u"ca-ogl-lgo"
-        odproduct['attribution'] = u"Contains information licensed under the Open Government Licence \u2013 Canada."
-        odproduct['attribution_fra'] = u"Contient des informations autoris\u00e9es sous la Licence du gouvernement ouvert- Canada"
-        odproduct['geographic_region'] = self._get_places(geoproduct_en, geoproduct_fr)
         odproduct['spatial'] = str(geoproduct_en['geometry']).replace("'", '\"')
+        
         try:
             odproduct['date_published'] = geoproduct_en['citation']['publicationDate']
         except:
@@ -305,11 +319,11 @@ class GeogratisCommand(CkanCommand):
             for form in geoproduct_en['citation']['presentationForm'].split():
 
                 if form.strip(';') in self.presentation_forms:
-                    print form
                     odproduct['presentation_form'] = self.presentation_forms[form.strip(';')]
         except:
             valid = False
             self.reasons = '%s Missing or invalid Presentation Form;' % self.reasons
+        
         try:
             odproduct['browse_graphic_url'] =  geoproduct_en['browseImages'][0]['link']
         except:
@@ -322,31 +336,40 @@ class GeogratisCommand(CkanCommand):
             odproduct['data_series_name'] = geoproduct_en['citation']['series']
         except:
             odproduct['data_series_name'] = ''
+            
         try:
             odproduct['data_series_name_fra'] = geoproduct_fr['citation']['series']
         except:
             odproduct['data_series_name_fra'] = '' 
+        
         try:
             odproduct['data_series_issue_identification'] = geoproduct_en['citation']['seriesIssue']
         except:
             odproduct['data_series_issue_identification'] = ''
+        
         try:
             odproduct['data_series_issue_identification_fra'] = geoproduct_fr['citation']['seriesIssue']
         except:
             odproduct['data_series_issue_identification_fra'] = ''
+        
         # This is not a mandatory field
         try:
             odproduct['digital_object_identifier'] = geoproduct_en['citation']['otherCitationDetails']
         except:
             odproduct['digital_object_identifier'] = ""
+        
         # Time period coverage is not being set for Geogratis at this time
         odproduct['time_period_coverage_start'] = ""
         odproduct['time_period_coverage_end'] = ""
+        
         odproduct['url'] = geoproduct_en['url']
         odproduct['url_fra'] = geoproduct_fr['url']
+        
         odproduct['endpoint_url'] = "http://geogratis.gc.ca/api/en"
         odproduct['endpoint_url_fra'] = "http://geogratis.gc.ca/api/fr"
+        
         odproduct['ready_to_publish'] = True
+        
         odproduct['portal_release_date'] = ""
         
         # Load the resources
@@ -413,14 +436,17 @@ class GeogratisCommand(CkanCommand):
             if link['rel'] == 'next':
                 return link['href']
     
-    
+    # Obtain a string with comma-separated keywords. For some NRCAN products it is necessary to
+    # strip away keyword hierarchy: e.g. for "one > two > three" should only be "three".
     def _extract_keywords(self, keywords):
         simple_keywords = []
         for keyword in keywords:
             words = keyword.split('>')
             if len(words) > 0:
                 last_word = words.pop()
-                simple_keywords.append(last_word.strip().replace("/", " - "))
+                last_word = last_word.strip().replace("/", " - ")
+                last_word = last_word.replace("(", "- ").replace(")", "") # change "one (two)" to "one - two"
+                simple_keywords.append(last_word)
         return ','.join(simple_keywords)
             
     def _get_product_type(self, geoproduct):
@@ -430,11 +456,25 @@ class GeogratisCommand(CkanCommand):
           if category['type'] == 'urn:iso:series':
               product_type = category['terms'][0]['term']
       
-    def _get_places(self, geoproduct_en, geoproduct_fr):
+    # Return the first match for a geographic region. Note that for the region 'Canada' the value is
+    # and empty string since this assumed to be the default
+    def _get_places(self, geoproduct_en):
         places = ""
-        # For this, not likely to match against current schema - needs more discussion
+        for category in geoproduct_en['categories']:
+            if category['type'] == 'urn:iso:place':
+                for term in category['terms']:
+                    if term["label"] in self.geographic_regions.keys() and term["label"] <> "Canada":
+                        places = self.geographic_regions[term["label"]]
+                        break
+                break            
         return places
         
+    '''
+    The Open Data schema uses the Government of Canada (GoC) thesaurus to enumerate valid topics and subjects.
+    The schema provides a mapping of subjects to topic categories. Geogratis records provide GoC topics.
+    This function looks up the subjects for these topics and returns two dictionaries with appropriate 
+    Open Data topics and subjects for this Geogratis record.
+    '''
     def _get_gc_subject_category(self, geoproduct_en):
         topics = []
         subjects = []
