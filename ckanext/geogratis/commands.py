@@ -234,7 +234,7 @@ class GeogratisCommand(CkanCommand):
 
                 # get the next set from the Atom feed. When the Atom feed is empty, then we are done.
                 json_obj = self._get_feed_json_obj(self._get_next_link(json_obj))
-                if json_obj['count'] == 0 or i == 200:
+                if json_obj['count'] == 0 or i == 10:
                     break
                 
     """
