@@ -188,7 +188,7 @@ class GeogratisCommand(CkanCommand):
                 i = i + 1
                 products = json_obj['products']
                 for product in products:
-                    sleep(0.2)  #Not to overwhelm Geogratis
+                    sleep(0.1)  #Not to overwhelm Geogratis
                     self.reasons = ''
                     
                     # Retrieve and test for English record
@@ -231,10 +231,11 @@ class GeogratisCommand(CkanCommand):
                             print  >>  self.output_file, (json.dumps(odproduct, indent = 2 * ' '))
                         else:
                             print  >>  self.output_file, (json.dumps(odproduct, encoding="utf-8"))
+                        self.output_file.flush()
 
                 # get the next set from the Atom feed. When the Atom feed is empty, then we are done.
                 json_obj = self._get_feed_json_obj(self._get_next_link(json_obj))
-                if json_obj['count'] == 0 or i == 10:
+                if json_obj['count'] == 0 or i == 200:
                     break
                 
     """
@@ -292,15 +293,25 @@ class GeogratisCommand(CkanCommand):
             self.reasons = '%s No GC Topics;' % self.reasons
                     
         # Keywords (Mandatory)
-        odproduct['keywords'] = self._extract_keywords(geoproduct_en.get('keywords', []))
+        xtra_en_keywords = []
+        gc_keywords = self._get_category(geoproduct_en, 'urn:gc:subject')
+        for term in gc_keywords: 
+            xtra_en_keywords.append(self._clean_keyword(term['label']))
+        odproduct['keywords'] = self._extract_keywords(geoproduct_en.get('keywords', []), xtra_en_keywords)
+
         if len(odproduct['keywords']) == 0:
             valid = False
             self.reasons = '%s Missing English Keywords;' % self.reasons
         
-        odproduct['keywords_fra'] = self._extract_keywords(geoproduct_fr.get('keywords', []))
+        xtra_fr_keywords = []
+        gc_keywords = self._get_category(geoproduct_fr, 'urn:gc:subject')
+        for term in gc_keywords: 
+            xtra_fr_keywords.append(self._clean_keyword(term['label']))     
+        odproduct['keywords_fra'] = self._extract_keywords(geoproduct_fr.get('keywords', []), xtra_fr_keywords)
+        
         if len(odproduct['keywords_fra']) == 0:
             valid = False        
-            self.reasons = '%s Missing English Keywords;' % self.reasons
+            self.reasons = '%s Missing French Keywords;' % self.reasons
                 
         odproduct['geographic_region'] = self._get_places(geoproduct_en)
         
@@ -438,36 +449,47 @@ class GeogratisCommand(CkanCommand):
     
     # Obtain a string with comma-separated keywords. For some NRCAN products it is necessary to
     # strip away keyword hierarchy: e.g. for "one > two > three" should only be "three".
-    def _extract_keywords(self, keywords):
-        simple_keywords = []
+    def _extract_keywords(self, keywords, base_keywords):
         for keyword in keywords:
             words = keyword.split('>')
             if len(words) > 0:
                 last_word = words.pop()
-                last_word = last_word.strip().replace("/", " - ")
-                last_word = last_word.replace("(", "- ").replace(")", "") # change "one (two)" to "one - two"
-                simple_keywords.append(last_word)
-        return ','.join(simple_keywords)
+                last_word = self._clean_keyword(last_word)
+                base_keywords.append(last_word)
+        return ','.join(base_keywords)
             
+    def _clean_keyword(self, keyword):
+        keyword = keyword.strip().replace("/", " - ")
+        keyword = keyword.replace("(", "- ").replace(")", "") # change "one (two)" to "one - two"
+        keyword = keyword.replace("[", "- ").replace("]", "") # change "one [two]" to "one - two"
+        return keyword
+        
     def _get_product_type(self, geoproduct):
         product_type = ""
-        categories = geoproduct['categories']
-        for category in categories:
-          if category['type'] == 'urn:iso:series':
-              product_type = category['terms'][0]['term']
+        terms = self._get_category(geoproduct, 'urn:iso:series')
+        if len(terms) > 0:
+            product_type = terms[0]['term']
+        return product_type
       
     # Return the first match for a geographic region. Note that for the region 'Canada' the value is
     # and empty string since this assumed to be the default
-    def _get_places(self, geoproduct_en):
+    def _get_places(self, geoproduct):
         places = ""
-        for category in geoproduct_en['categories']:
-            if category['type'] == 'urn:iso:place':
-                for term in category['terms']:
-                    if term["label"] in self.geographic_regions.keys() and term["label"] <> "Canada":
-                        places = self.geographic_regions[term["label"]]
-                        break
-                break            
+        terms = self._get_category(geoproduct, 'urn:iso:place')
+        for term in terms:
+            if term["label"] in self.geographic_regions.keys() and term["label"] <> "Canada":
+                places = self.geographic_regions[term["label"]]
+                break
         return places
+    
+    def _get_category(self, geoproduct, cat_type):
+        category = []
+        for cat in geoproduct['categories']:
+            if cat['type'] == cat_type:
+                category = cat['terms']
+                break
+        return category
+        
         
     '''
     The Open Data schema uses the Government of Canada (GoC) thesaurus to enumerate valid topics and subjects.
