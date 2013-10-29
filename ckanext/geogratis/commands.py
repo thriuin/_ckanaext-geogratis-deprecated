@@ -7,8 +7,8 @@ import dateutil.parser
 import datetime
 import logging
 import os.path
-import paste.script
-import re 
+import re
+import redis
 import simplejson as json
 import urllib2
 import sys
@@ -43,13 +43,20 @@ class GeogratisCommand(CkanCommand):
     parser.add_option('-r', '--report-file', dest='report_file', help='text to write out a import records report')
     parser.add_option('-f', '--json-file', dest='jl_file', help='imported Geogratis records in JSON lines format')
     parser.add_option('-n', '--no-print', dest='noprint', action='store_true', help='Do not print out the JSON records')
+    parser.add_option('-m', '--max', dest='maximum', help='maximum number of times to read the Geogratis feed',
+                      default=1)
+    parser.add_option('-z', '--reset', dest='reset', action='store_true', help='Reset the feed and start from the beginning')
     parser.add_option('-c', '--config', dest='config',
         default='development.ini', help='Configuration file to use.')
+
+    # Connect to the local Redis server - for now we assume it is running on the same server
+
+    red = redis.StrictRedis(host='localhost', port=6379, db=0)
                 
     def command(self):
-        '''
-        Parse command line arguments and call appropriate method.
-        '''
+
+        # Parse command line arguments and call appropriate method.
+
         if not self.args or self.args[0] in ['--help', '-h', 'help']:
             print self.__doc__
             return
@@ -60,12 +67,10 @@ class GeogratisCommand(CkanCommand):
         
         self.logger = logging.getLogger('ckanext')
            
-        '''
-        Create look-up table (dicts) of valid choices from the Open Data schema for the following fields;
-        * topic categories
-        * resource file format types
-        * geographic regions
-        '''   
+        # Create look-up table (dicts) of valid choices from the Open Data schema for the following fields;
+        # * topic categories
+        # * resource file format types
+        # * geographic regions
         
         # Topic categories
         self.topic_choices = dict((c['eng'], c)
@@ -122,10 +127,9 @@ class GeogratisCommand(CkanCommand):
         if self.options.jl_file:
             self.output_file = open(os.path.normpath(self.options.jl_file), 'wt')
             self.display_formatted = False
-                       
-        '''
-        Command: print_one - retrieve one record from Geogratis and print it out.
-        '''                
+
+        # Command: print_one - retrieve one record from Geogratis and print it out.
+
         if cmd == 'print_one':
 
             json_data = None
@@ -139,9 +143,8 @@ class GeogratisCommand(CkanCommand):
             except urllib2.URLError, e:
                 logger.error(e.reason)
 
-        #---------------------
         # Command: updated or get_all - retrieve records from a Geogratis feed and convert to
-        #         open data's JSON format.
+        #                               open data's JSON format.
         
         elif cmd == 'updated' or cmd == 'get_all':
             
@@ -159,7 +162,17 @@ class GeogratisCommand(CkanCommand):
                 except ValueError, e:
                     logger.error('"%s" is an invalid date' % self.options.date)
                     return
-      
+
+            # Check to see if we are resuming from a previous feed. If the reset flag was set, then blank out the
+            # previous feed link and restart from scratch
+
+            if self.options.reset:
+              self.red.delete('ckanext.geogratis.next_link')
+            else:
+              rel_link = self.red.get('ckanext.geogratis.next_link')
+              if rel_link:
+                query_string = rel_link
+
             # Get the feed from Geogratis. The Atom feed only provides a list of datasets which then need to pulled in
             # one by one in their entirety.
             try:
@@ -170,8 +183,9 @@ class GeogratisCommand(CkanCommand):
             
             dt = datetime.date.today()
           
-            # @TODO: Remove this logic
-            i = 0  # artificial limit while developing 
+            # Set a maximum number of data sets to retrieve
+            maxreads = int(self.options.maximum)  # artificial limit while developing
+            i = 0
             
             # Log all exports to a CSV file
             
@@ -183,7 +197,7 @@ class GeogratisCommand(CkanCommand):
                 self.report = csv.DictWriter(reportf, dialect='excel',fieldnames=fieldnames)
                 self.report.writerow(dict(zip(fieldnames, fieldnames)))
             
-            # Keep reading from the Atom feed until the end is reached
+            # Keep reading from the Atom feed until the end is reached, or the maximum number of reads is reached
             while True:
                 i = i + 1
                 products = json_obj['products']
@@ -234,23 +248,23 @@ class GeogratisCommand(CkanCommand):
                         self.output_file.flush()
 
                 # get the next set from the Atom feed. When the Atom feed is empty, then we are done.
-                json_obj = self._get_feed_json_obj(self._get_next_link(json_obj))
-                if json_obj['count'] == 0 or i == 200:
+                next_link = self._get_next_link(json_obj)
+                self.red.set('ckanext.geogratis.next_link', next_link)
+                json_obj = self._get_feed_json_obj(next_link)
+                if json_obj['count'] == 0 or i == maxreads:
                     break
-                
-    """
-    The following NRCAN fields are mandatory for the Open Data schema:
-    * id
-    * title (English and French)
-    * summary (English and French)form.strip(';')
-    * subject
-    * topicCategories
-    * keywords
-    * spatial
-    * date_published 
-    * browse_graphic_url
-    * 
-    """
+
+    # The following NRCAN fields are mandatory for the Open Data schema:
+    # * id
+    # * title (English and French)
+    # * summary (English and French)form.strip(';')
+    # * subject
+    # * topicCategories
+    # * keywords
+    # * spatial
+    # * date_published
+    # * browse_graphic_url
+
     def _convert_to_od_dataset(self, geoproduct_en, geoproduct_fr):
         
         odproduct = {}
@@ -426,6 +440,7 @@ class GeogratisCommand(CkanCommand):
             odproduct = None
         return odproduct
 
+    # Retrieve the JSON feed from Geogratis and return it as a JSON object
     def _get_feed_json_obj(self, link):
         try:
             response = urllib2.urlopen(link)
@@ -437,10 +452,12 @@ class GeogratisCommand(CkanCommand):
             self.logger.error(e.msg)
         return None
 
+    # Retrieve one dataset from Geogratis and return it as a JSON object
     def _get_geogratis_item(self, geo_id, lang):
         json_obj = self._get_feed_json_obj('http://geogratis.gc.ca/api/%s/nrcan-rncan/ess-sst/%s.json' % (lang, geo_id))
         return json_obj
 
+    # Look up the 'rel' link from the feed - this is URL for the next page of the feed
     def _get_next_link(self, json_obj):
         links = json_obj['links']
         for link in links:
@@ -491,12 +508,10 @@ class GeogratisCommand(CkanCommand):
         return category
         
         
-    '''
-    The Open Data schema uses the Government of Canada (GoC) thesaurus to enumerate valid topics and subjects.
-    The schema provides a mapping of subjects to topic categories. Geogratis records provide GoC topics.
-    This function looks up the subjects for these topics and returns two dictionaries with appropriate 
-    Open Data topics and subjects for this Geogratis record.
-    '''
+    # The Open Data schema uses the Government of Canada (GoC) thesaurus to enumerate valid topics and subjects.
+    # The schema provides a mapping of subjects to topic categories. Geogratis records provide GoC topics.
+    # This function looks up the subjects for these topics and returns two dictionaries with appropriate
+    # Open Data topics and subjects for this Geogratis record.
     def _get_gc_subject_category(self, geoproduct_en):
         topics = []
         subjects = []
@@ -544,4 +559,3 @@ class GeogratisCommand(CkanCommand):
         else:
             return self.format_types[geogratis_type]        
         
-  
