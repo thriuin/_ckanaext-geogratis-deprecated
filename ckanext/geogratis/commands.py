@@ -387,8 +387,8 @@ class GeogratisCommand(CkanCommand):
         odproduct['time_period_coverage_start'] = ""
         odproduct['time_period_coverage_end'] = ""
         
-        odproduct['url'] = geoproduct_en['url']
-        odproduct['url_fra'] = geoproduct_fr['url']
+        odproduct['url'] = geoproduct_en['url'][:-5]
+        odproduct['url_fra'] = geoproduct_fr['url'][:-5]
         
         odproduct['endpoint_url'] = "http://geogratis.gc.ca/api/en"
         odproduct['endpoint_url_fra'] = "http://geogratis.gc.ca/api/fr"
