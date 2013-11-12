@@ -1,1 +1,4 @@
-redis>=2.8.0
+PasteScript>=1.7.3
+simplejson>=3.3.0
+ckan>=2.1
+ckanext-canada>=0.2
