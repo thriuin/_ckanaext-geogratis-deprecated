@@ -5,3 +5,5 @@ ckanext_geogratis.egg-info
 development.ini
 __init__.py
 *.prefs
+run.sh
+geogratis.cfg
