@@ -14,11 +14,11 @@ import urllib2
 import sys
 
 class GeogratisCommand(CkanCommand):
-    """
-    CKAN Geogratis Extension
+    """CKAN Geogratis Extension
     
     Usage:
         paster geogratis print_one -u <uuid> [-f <file-name>] [-c <config-file>]
+                         import_one -u <uuid> [-f <file-name>] [-c <config-file>]
                          updated -d <date-time> [-f <file-name>] [-r <report_file>] [-n] [-c <config-file>]
                          get_all [-f <file-name>] [-r <report_file>] [-n] [-z] [-m <max-number>] [-c <config-file>]
                          [-h | --help]
@@ -41,6 +41,7 @@ class GeogratisCommand(CkanCommand):
         -r/--report-file Filename of a basic log file to generate while importing records
         -u/--uuid        Geogratis dataset ID number
         -z/--reset       Reset the feed and start from the beginning
+
 
     """
     summary = __doc__.split('\n')[0]
@@ -146,11 +147,21 @@ class GeogratisCommand(CkanCommand):
                 print  >>  self.output_file, json.dumps(json_obj, indent = 2 * ' ')
                 
             except urllib2.URLError, e:
-                logger.error(e.reason)
+                self.logger.error(e.reason)
 
         # Command: updated or get_all - retrieve records from a Geogratis feed and convert to
         #                               open data's JSON format.
-        
+
+        elif cmd == 'import_one':
+            try:
+                if not self.options.uuid:
+                    print self.__doc__
+                    return
+                json_obj = self._import_geogratis_record(self.options.uuid)
+
+            except urllib2.URLError, e:
+                self.logger.error(e.reason)
+
         elif cmd == 'updated' or cmd == 'get_all':
             
             # By default, retrieve all records from Geogratis
@@ -165,7 +176,7 @@ class GeogratisCommand(CkanCommand):
                     dt = dateutil.parser.parse(self.options.date)
                     query_string = 'http://geogratis.gc.ca/api/en/nrcan-rncan/ess-sst?edited-min=%s&alt=json' % dt.isoformat()
                 except ValueError, e:
-                    logger.error('"%s" is an invalid date' % self.options.date)
+                    self.logger.error('"%s" is an invalid date' % self.options.date)
                     return
 
             # Check to see if we are resuming from a previous feed. If the reset flag was set, then blank out the
@@ -183,7 +194,7 @@ class GeogratisCommand(CkanCommand):
             try:
                 json_obj = self._get_feed_json_obj(query_string)
             except urllib2.URLError, e:
-                logger.error(e.reason)
+                self.logger.error(e.reason)
                 return
             
             dt = datetime.date.today()
@@ -211,50 +222,8 @@ class GeogratisCommand(CkanCommand):
                     products = json_obj['products'] # Array of datasets in the JSON response from Geogratis
                     for product in products:
                         time.sleep(0.05)  # Allow some gap in time between requests to Geogratis
-                        self.err_reasons = ''
 
-                        # Retrieve and test for English record
-                        geoproduct_en = self._get_geogratis_item(product['id'], 'en')
-                        if not geoproduct_en:
-                            self.logger.warn('Unable to retrieve English record for %s' % product['id'])
-                            continue
-
-                        # A test could be used here if there is a desire to only process or exclude certain
-                        # types of data. For example, to exclude Canadian digital elevation data:
-                        # if self._get_product_type(geoproduct_en) == "canadian-digital-elevation-data":
-                        #    continue
-
-                        # Retrieve and test for the existence of the matching French record
-                        geoproduct_fr = self._get_geogratis_item(product['id'], 'fr')
-                        if not geoproduct_fr:
-                            self.logger.warn('Unable to retrieve French record for %s' % product['id'])
-                            self.err_reasons = "Unable to retrieve French record"
-                            if self.options.report_file:
-                                self.report.writerow({'ID' : product['id'],
-                                'Pass or Fail' : False,
-                                'Title (EN)' : geoproduct_en['title'].encode('utf-8'),
-                                'Title (FR)' : '',
-                                'Summary (EN)' : '',
-                                'Summary (FR)' : '',
-                                'Topic Categories' : '',
-                                'Keywords' : '',
-                                'Published Date' : '',
-                                'Browse Images' : '',
-                                'Series (EN)' : '',
-                                'Series (FR)' : '',
-                                'Series Issue (EN)' : '',
-                                'Series Issue (FR)' : '',
-                                'Reason for Failure' : 'Unable to retrieve French record'})
-                            continue
-
-                        # Convert the Geogratis English and French dataset records into an Open Data JSON object
-                        odproduct = self._convert_to_od_dataset(geoproduct_en, geoproduct_fr)
-                        if odproduct and not self.options.noprint:
-                            if self.display_formatted:
-                                print  >>  self.output_file, (json.dumps(odproduct, indent = 2 * ' '))
-                            else:
-                                print  >>  self.output_file, (json.dumps(odproduct, encoding="utf-8"))
-                            self.output_file.flush()
+                        self._import_geogratis_record(product['id'])
 
                     # get the next set from the Atom feed. When the Atom feed is empty (or
                     # the maximum read count has been reached, then we are done.
@@ -269,19 +238,71 @@ class GeogratisCommand(CkanCommand):
             finally:
                 self.output_file.close()
 
-    # Using the English and French Geogratis JSON dataset, generate an Open Data JSON dataset.
-    # The following NRCAN fields are mandatory for the Open Data schema:
-    # * id
-    # * title (English and French)
-    # * summary (English and French)form.strip(';')
-    # * subject
-    # * topicCategories
-    # * keywords
-    # * spatial
-    # * date_published
-    # * browse_graphic_url
+
+    def _import_geogratis_record(self, id):
+        self.err_reasons = ''
+
+        # Retrieve and test for English record
+        geoproduct_en = self._get_geogratis_item(id, 'en')
+        if not geoproduct_en:
+            self.logger.warn('Unable to retrieve English record for %s' % id)
+            return
+
+        # A test could be used here if there is a desire to only process or exclude certain
+        # types of data. For example, to exclude Canadian digital elevation data:
+        # if self._get_product_type(geoproduct_en) == "canadian-digital-elevation-data":
+        #    continue
+
+        # Retrieve and test for the existence of the matching French record
+        geoproduct_fr = self._get_geogratis_item(id, 'fr')
+        if not geoproduct_fr:
+            self.logger.warn('Unable to retrieve French record for %s' % id)
+            self.err_reasons = "Unable to retrieve French record"
+            if self.options.report_file:
+                self.report.writerow({'ID' : id,
+                'Pass or Fail' : False,
+                'Title (EN)' : geoproduct_en['title'].encode('utf-8'),
+                'Title (FR)' : '',
+                'Summary (EN)' : '',
+                'Summary (FR)' : '',
+                'Topic Categories' : '',
+                'Keywords' : '',
+                'Published Date' : '',
+                'Browse Images' : '',
+                'Series (EN)' : '',
+                'Series (FR)' : '',
+                'Series Issue (EN)' : '',
+                'Series Issue (FR)' : '',
+                'Reason for Failure' : 'Unable to retrieve French record'})
+            return
+
+        # Convert the Geogratis English and French dataset records into an Open Data JSON object
+        odproduct = self._convert_to_od_dataset(geoproduct_en, geoproduct_fr)
+
+        if odproduct and not self.options.noprint:
+            if self.display_formatted:
+                print  >>  self.output_file, (json.dumps(odproduct, indent = 2 * ' '))
+            else:
+                print  >>  self.output_file, (json.dumps(odproduct, encoding="utf-8"))
+            self.output_file.flush()
+
+
     def _convert_to_od_dataset(self, geoproduct_en, geoproduct_fr):
-        
+        """Convert the Geogratis JSON into CKAN Open Data JSON
+
+        Using the English and French Geogratis JSON dataset, generate an Open Data JSON dataset.
+        The following NRCAN fields are mandatory for the Open Data schema:
+            * id
+            * title (English and French)
+            * summary (English and French)form.strip(';')
+            * subject
+            * topicCategories
+            * keywords
+            * spatial
+            * date_published
+            * browse_graphic_url
+
+        """
         odproduct = {}
         valid = True
         
@@ -467,8 +488,8 @@ class GeogratisCommand(CkanCommand):
             odproduct = None
         return odproduct
 
-    # Retrieve the JSON feed from Geogratis and return it as a JSON object
     def _get_feed_json_obj(self, link):
+        """Retrieve the JSON feed from Geogratis and return it as a JSON object"""
         try:
             response = urllib2.urlopen(link, None, 10)
             json_data = response.read()
@@ -479,21 +500,25 @@ class GeogratisCommand(CkanCommand):
             self.logger.error(e.msg)
         return None
 
-    # Retrieve one dataset from Geogratis and return it as a JSON object
     def _get_geogratis_item(self, geo_id, lang):
+        """Retrieve one dataset from Geogratis and return it as a JSON object"""
         json_obj = self._get_feed_json_obj('http://geogratis.gc.ca/api/%s/nrcan-rncan/ess-sst/%s.json' % (lang, geo_id))
         return json_obj
 
-    # Look up the 'rel' link from the feed - this is URL for the next page of the feed
     def _get_next_link(self, json_obj):
+        """Look up the 'rel' link from the feed - this is URL for the next page of the feed"""
         links = json_obj['links']
         for link in links:
             if link['rel'] == 'next':
                 return link['href']
-    
-    # Obtain a string with comma-separated keywords. For some NRCAN products it is necessary to
-    # strip away keyword hierarchy: e.g. for "one > two > three" should only be "three".
+
     def _extract_keywords(self, keywords, base_keywords):
+        """Extract the keywords from keyword hierarchies
+
+        Obtain a string with comma-separated keywords. For some NRCAN products it is necessary to
+        strip away keyword hierarchy: e.g. for "one > two > three" should only be "three".
+
+        """
         for keyword in keywords:
             words = keyword.split('>')
             if len(words) > 0:
@@ -502,24 +527,28 @@ class GeogratisCommand(CkanCommand):
                 base_keywords.append(last_word)
         return ','.join(base_keywords)
 
-    # Clean up formatting on the keywords
     def _clean_keyword(self, keyword):
+        """Clean up formatting on the keywords"""
         keyword = keyword.strip().replace("/", " - ")
         keyword = keyword.replace("(", "- ").replace(")", "") # change "one (two)" to "one - two"
         keyword = keyword.replace("[", "- ").replace("]", "") # change "one [two]" to "one - two"
         return keyword
 
-    # Look up the product type which is mapped against the dataset's assigned category
     def _get_product_type(self, geoproduct):
+        """Look up the product type which is mapped against the dataset's assigned category"""
         product_type = ""
         terms = self._get_category(geoproduct, 'urn:iso:series')
         if len(terms) > 0:
             product_type = terms[0]['term']
         return product_type
-      
-    # Return the first match for a geographic region. Note that for the region 'Canada' the value is
-    # and empty string since this assumed to be the default
+
     def _get_places(self, geoproduct):
+        """
+
+        Return the first match for a geographic region. Note that for the region 'Canada' the value is
+        and empty string since this assumed to be the default
+
+        """
         places = ""
         terms = self._get_category(geoproduct, 'urn:iso:place')
         for term in terms:
@@ -528,8 +557,8 @@ class GeogratisCommand(CkanCommand):
                 break
         return places
 
-    # Retrieve the category from the dataset
     def _get_category(self, geoproduct, cat_type):
+        """Retrieve the category from the dataset"""
         category = []
         for cat in geoproduct['categories']:
             if cat['type'] == cat_type:
@@ -538,21 +567,26 @@ class GeogratisCommand(CkanCommand):
         return category
         
         
-    # The Open Data schema uses the Government of Canada (GoC) thesaurus to enumerate valid topics and subjects.
-    # The schema provides a mapping of subjects to topic categories. Geogratis records provide GoC topics.
-    # This function looks up the subjects for these topics and returns two dictionaries with appropriate
-    # Open Data topics and subjects for this Geogratis record.
+
     def _get_gc_subject_category(self, geoproduct_en):
+        """Look up the GoC thesaurus values to determine topics and subjects.
+
+        The Open Data schema uses the Government of Canada (GoC) thesaurus to enumerate valid topics and subjects.
+        The schema provides a mapping of subjects to topic categories. Geogratis records provide GoC topics.
+        This function looks up the subjects for these topics and returns two dictionaries with appropriate
+        Open Data topics and subjects for this Geogratis record.
+
+        """
         topics = []
         subjects = []
 
         schema_categories = schema_description.dataset_field_by_id['topic_category']['choices']
         topic_categories = geoproduct_en.get('topicCategories', [])
-        
+
         # Subjects are mapped to the topics in the schema, so both are looked up from the topic keys
         for topic in topic_categories:
             # Test for a non-standard exceptions specific to Geogratis
-            if topic == 'society; soci\u00e9t\u00e9':
+            if topic == u'society; soci\u00e9t\u00e9':
               topic = "society"
             elif topic == "farming; agriculture":
               topic = "farming"
@@ -570,8 +604,8 @@ class GeogratisCommand(CkanCommand):
 
         return { 'topics' : topics, 'subjects' : subjects}
 
-    # CKAN works with a dictionary of GeoJSON strings values. Ensure all values are formatted as required.
     def _encapsulate_geojson(self,geodict):
+        """CKAN works with a dictionary of GeoJSON strings values. Ensure all values are formatted as required."""
         new_geodict = {}
         for key in geodict.keys():
             new_key ='"%s"' % (key,)
@@ -580,9 +614,9 @@ class GeogratisCommand(CkanCommand):
             else:
                 new_geodict[new_key] = geodict[key]
         return new_geodict
-    
-    # Take a Geogratis file size string (e.g. 1.25 MB) and convert into a number of bytes in base 10l
+
     def _to_byte_string(self, filesize):
+        """Take a Geogratis file size string (e.g. 1.25 MB) and convert into a number of bytes in base 10"""
         parts = filesize.split()
         num = float(parts[0])
         if parts[1] == 'KB':
@@ -595,16 +629,15 @@ class GeogratisCommand(CkanCommand):
             num = 0
         return int(round(num, -1))
 
-    # Map the Geogratis resource file type to the Open Data key value. Use 'Other' as a default value.
-
     def _to_format_type(self, geogratis_type):
+        """Map the Geogratis resource file type to the Open Data key value. Use 'Other' as a default value."""
         if geogratis_type not in self.format_types:
             return 'Other'
         else:
             return self.format_types[geogratis_type]        
 
-    # Retrieve a local configuration value. Created to hold the monitor-link next link reference in-between executions
     def _get_cfg_value(self, section, key):
+        """Retrieve a local configuration value. Created to hold the monitor-link next link reference in-between executions"""
         conf = ConfigParser.ConfigParser()
         conf.read('geogratis.cfg')
         keyvalue = conf.get(section, key)
@@ -614,8 +647,8 @@ class GeogratisCommand(CkanCommand):
         else:
             return ''
 
-    # Save a local configuration value
     def _set_cfg_value(self, section, key, keyvalue):
+        """Save a local configuration value"""
         if not keyvalue:
             keyvalue = ''
         conf = ConfigParser.ConfigParser()
